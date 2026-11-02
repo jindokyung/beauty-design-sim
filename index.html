@@ -441,7 +441,7 @@ const DEFAULTS = {shape:'semiArch', style:'combo', color:PIGMENTS[1].c, thick:1,
                   smpBrush:'shade', smpColor:'#2a2624', smpBrushSet:{shade:{size:.04, op:.75, layerOp:.7, dot:.8}, erase:{size:.05, op:1, layerOp:1}},
                   moleBrush:'mole', moleColor:'#5a3a2c', moleBrushSet:{mole:{size:.014, op:.9, layerOp:.9}, freckle:{size:.06, op:.75, layerOp:.8}, erase:{size:.03, op:1, layerOp:1}},
                   linerStyle:'basic', linerColor:'#1d1a19', linerThick:.5, linerTail:.3, linerAngle:.4, linerOp:.85, linerSoft:.3, linerUnder:0,
-                  lashStyle:'natural', lashColor:'#141212', lashLen:11, lashCurl:'C', lashDensity:.6, lashThick:.5,
+                  lashStyle:'a_classic', lashColor:'#141212', lashLen:11, lashCurl:'C', lashDensity:.6, lashThick:.5,
                   lipStyle:'grad', lipColor:'#c94a45', lipOp:.75, lipGrad:.5, lipExpand:0, lipCover:0,
                   browBrushSet:{design:{size:.025, op:.5, layerOp:.6}, shade:{size:.02, op:.7, layerOp:.7, dot:1}, hair:{size:.015, op:.9, layerOp:.9}, erase:{size:.025, op:1, layerOp:1}}};
 
@@ -1161,7 +1161,42 @@ function lashGeom(E, up, t, len, curl, sideSign, eye, jit = 0){
   return {b:{x:p.x, y:p.y}, ctrl:{x:p.x + d.x*len*.6, y:p.y + d.y*len*.6},
           tip:{x:p.x + d.x*len*(1 - cu*.45) + u2.x*len*cu*1.1, y:p.y + d.y*len*(1 - cu*.45) + u2.y*len*cu*1.1}};
 }
+// ── 실사 속눈썹: 실제 사진에서 떼어 낸 속눈썹 띠(앞머리→꼬리, 아래쪽이 눈꺼풀 선)를 고객 눈꺼풀 곡선에 맞춰 휘어 붙임
+const LASH_IMG = {list:[], byId:{}};
+async function loadLashImgs(){
+  try{
+    const list = await (await fetch('lashes/lashes.json')).json();
+    await Promise.all(list.map(m => new Promise(ok => { const i = new Image(); i.onload = () => { m.img = i; m.tint = {}; ok(); }; i.onerror = ok; i.src = `lashes/${m.id}.png`; })));
+    LASH_IMG.list = list.filter(m => m.img); LASH_IMG.list.forEach(m => LASH_IMG.byId[m.id] = m);
+  }catch(e){ console.warn('속눈썹 사진을 못 불러왔어요', e); }
+}
+const LS_W = 600, LS_H = 330, LS_BASE = 300;   // 띠 크기, 눈꺼풀 선 위치
+function lashLevel(m, color, f){   // 색 입힌 띠를 f배로 줄인 그림 (반씩 여러 번 줄여서 부드럽게)
+  const key = color + '@' + f; m.lv = m.lv || {};
+  if(!m.lv[key]){ let c = tinted(m, color);
+    for(let g = 1; g > f; g /= 2){ const n = document.createElement('canvas'); n.width = Math.max(1, Math.round(c.width/2)); n.height = Math.max(1, Math.round(c.height/2));
+      const x = n.getContext('2d'); x.imageSmoothingQuality = 'high'; x.drawImage(c, 0, 0, n.width, n.height); c = n; }
+    m.lv[key] = c; }
+  return m.lv[key];
+}
+function drawLashStrip(c, E, up, m){
+  const P = E.up, lidLen = P.slice(1).reduce((a, q, i) => a + dist(q, P[i]), 0), lm = S.lashLen/11*(m.len || 1);
+  // 눈이 작으면 미리 줄여 둔 그림을 써서 털이 자글자글 깨지지 않게
+  let f = 1; while(f > 1/16 && lidLen/((m.x1 || LS_W) - (m.x0 || 0)) < f/2) f /= 2;
+  const img = lashLevel(m, S.lashColor, f), X0 = (m.x0 || 0)*f, X1 = (m.x1 || LS_W)*f, SW = X1 - X0, N = 40, sw = SW/N, k = lidLen/SW, BASE = LS_BASE*f, SH = LS_H*f;
+  const nrm = s => { const p = lidAt(P, s); let nx = -p.ty, ny = p.tx; if(nx*up.x + ny*up.y < 0){ nx = -nx; ny = -ny; } return {p, nx, ny}; };
+  c.save();
+  for(let i=0;i<N;i++){
+    const xa = X0 + i*sw, xb = xa + sw, A = nrm((xa - X0)/SW), B = nrm(Math.min(1, (xb - X0)/SW));
+    const du = {x:(B.p.x - A.p.x)/sw, y:(B.p.y - A.p.y)/sw}, dv = {x:-A.nx*k*lm, y:-A.ny*k*lm};
+    c.setTransform(du.x, du.y, dv.x, dv.y, A.p.x - du.x*xa - dv.x*BASE, A.p.y - du.y*xa - dv.y*BASE);
+    c.drawImage(img, xa, 0, sw + .8*f, SH, xa, 0, sw + .8*f, SH);
+  }
+  c.restore();
+}
 function drawLashes(c, E, ew, up){
+  const ph = LASH_IMG.byId[S.lashStyle];
+  if(ph){ drawLashStrip(c, E, up, ph); return; }
   const st = LASH_STYLES[S.lashStyle] || LASH_STYLES.classic, mm = ew/30, curl0 = clamp(({J:.35, C:.6, D:.85}[S.lashCurl] || .6) + (st.base.curl || 0), 0, 1.2);
   const all = [...E.up, ...E.low], eye = {cx:all.reduce((a,q) => a+q.x, 0)/all.length, cy:all.reduce((a,q) => a+q.y, 0)/all.length, eh:Math.max(ew*.18, dist(E.up[4], E.low[4]))};
   const r = rng(17), Lmax = S.lashLen*mm, wB = Math.max(.5, mm*(.05 + .1*S.lashThick)*(st.base.th/.5));
@@ -1674,7 +1709,7 @@ function fit(){
   const padL = window.innerWidth > 640 ? 70 : 10;
   // 아래 막대가 떠 있으면 그 위로 사진을 맞춤
   const bar = ['lipBar','brushBar','linerBar','lashBar'].map(id => $(id)).find(e => e.style.display === 'flex'), bh = bar ? bar.getBoundingClientRect().height + 16 : 0;
-  const aw = r.width - padL - 20, ah = r.height - 30 - bh;
+  const aw = Math.max(120, r.width - padL - 20), ah = Math.max(160, r.height - 30 - bh);   // 막대가 커도 사진 크기가 0 이하로 안 되게
   view.base = Math.min(aw/src.width, ah/src.height);
   cv.style.width = src.width*view.base + 'px'; cv.style.height = src.height*view.base + 'px';
   view.z = 1; view.tx = padL + (aw - src.width*view.base)/2; view.ty = 15 + (ah - src.height*view.base)/2;
@@ -1899,13 +1934,15 @@ function buildEyeBars(){
       b.onclick = () => { S[key] = v; if(key === 'linerStyle'){ const st = LINER_STYLES[v]; S.linerTail = st.tail ? Math.max(S.linerTail, .5) : 0; S.linerUnder = st.under ? .6 : 0; } commit(); syncUI(); render(); }; box.append(b); }); };
   chips('linerStyles', Object.entries(LINER_STYLES).map(([k,v]) => [k, v.name]), 'linerStyle', 'st');
   chips('linerColors', LINER_COLORS.map(p => [p.c, p.name, p.c]), 'linerColor', '');
-  chips('lashStyles', Object.entries(LASH_STYLES).map(([k,v]) => [k, v.name]), 'lashStyle', 'st');
+  chips('lashStyles', [...LASH_IMG.list.map(m => [m.id, '📷 ' + m.name]), ...Object.entries(LASH_STYLES).map(([k,v]) => [k, v.name])], 'lashStyle', 'st');
   chips('lashCurls', ['J','C','D'].map(k => [k, k + '컬']), 'lashCurl', 'st');
   chips('lashColors', LASH_COLORS.map(p => [p.c, p.name, p.c]), 'lashColor', '');
   EYE_SL.forEach(k => { const el = $(k); el.addEventListener('input', () => { S[k] = parseFloat(el.value); syncEyeBars(); render(); });
     el.addEventListener('change', commit); el.addEventListener('pointerdown', e => e.stopPropagation()); });
 }
 function syncEyeBars(){
+  const ph = !!LASH_IMG.byId[S.lashStyle];
+  $('lashCurls').style.display = ph ? 'none' : ''; ['lashDensity','lashThick'].forEach(id => $(id).closest('label').style.display = ph ? 'none' : '');
   document.querySelectorAll('.eyeSide button').forEach(b => b.classList.toggle('on', b.dataset.es === S.eyeSide));
   document.querySelectorAll('.eyePtsBtn').forEach(b => b.classList.toggle('on', S.eyePts));
   EYE_SL.forEach(k => $(k).value = S[k]); $('lashLenV').textContent = S.lashLen + 'mm';
@@ -2196,12 +2233,12 @@ $('btnPhoto').onclick = () => { closePops(); $('fileAlbum').click(); };
 ['fileCam','fileAlbum'].forEach(id => $(id).onchange = e => { loadFile(e.target.files[0]); e.target.value = ''; });
 
 buildShapes(); buildStyles(); buildColors(); syncUI(); updUndo();
-await loadPatterns(); buildPatterns(); buildHairUI(); buildBrushUI(); buildBrushBar(); buildLipBar(); buildEyeBars(); syncUI(); render();
+await loadPatterns(); await loadLashImgs(); buildPatterns(); buildHairUI(); buildBrushUI(); buildBrushBar(); buildLipBar(); buildEyeBars(); syncUI(); render();
 // 미리 AI 준비 (사진 고르는 동안 받아 두기)
 getLandmarker().catch(() => {});
 
 // 테스트용: ?debug 이면 내부 상태 열어 두기, ?demo=사진주소
-if(new URLSearchParams(location.search).has('debug')) window.__sim = {S, compose, profile, E, SHAPES, rng, get src(){ return src; }, get brows(){ return brows; }, get HL(){ return HL; }, PAINT};
+if(new URLSearchParams(location.search).has('debug')) window.__sim = {S, compose, profile, E, SHAPES, rng, get src(){ return src; }, get brows(){ return brows; }, get HL(){ return HL; }, get EYES(){ return EYES; }, PAINT};
 // 테스트용: ?demo=사진주소
 const demo = new URLSearchParams(location.search).get('demo');
 if(demo){ const i = new Image(); i.crossOrigin = 'anonymous'; i.onload = () => setImage(i); i.src = demo; }
